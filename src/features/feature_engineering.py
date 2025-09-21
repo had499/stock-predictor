@@ -118,6 +118,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         # Apply features per symbol using groupby
         df = data.groupby('symbol').apply(self._add_features_to_group).reset_index(drop=True)
 
+        # Remove features that may cause data leakage
+        df = self._remove_today_features(df)
+
         
         logger.info(f"Added {len(df.columns) - len(data.columns)} new features")
         return df
@@ -148,38 +151,46 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         
         if self.add_trend_indicators:
             df = self._add_trend_indicators(df)
-        
+
+        # Add target column
+        df = self.add_target_col(df)
         logger.info(f"Added {len(df.columns) - len(group_data.columns)} new features")
         return df
     
     def _add_price_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Add price-based features."""
         df = data.copy()
+
+        df['price_1lag'] = df[self.price_column].shift(1)  
+        df['volume_1lag'] = df[self.volume_column].shift(1)  
+        df['high_1lag'] = df[self.high_column].shift(1)  
+        df['low_1lag'] = df[self.low_column].shift(1)  
+        df['open_1lag'] = df[self.open_column].shift(1)
         
         # Basic price changes
-        df['price_change'] = df[self.price_column] - df[self.price_column].shift(1)
-        df['price_change_pct'] = df[self.price_column].pct_change()
-        df['log_return'] = np.log(df[self.price_column] / df[self.price_column].shift(1))
+        # df['price_change'] = df[self.price_column] - df[self.price_column].shift(1)
+        # df['price_change_pct'] = df[self.price_column].pct_change()
+        # df['log_return'] = np.log(df[self.price_column] / df[self.price_column].shift(1))
         
         # Open to close change
-        df['open_close_change'] = df[self.price_column] - df[self.open_column]
-        df['open_close_change_pct'] = (df[self.price_column] - df[self.open_column]) / df[self.open_column]
+        df['open_close_change_1lag'] = df[self.price_column].shift(1) - df[self.open_column].shift(1)
+        df['open_close_change_pct_1lag'] = (df[self.price_column].shift(1) - df[self.open_column].shift(1)) / df[self.open_column].shift(1)
         
         # High-low features
-        df['hl_spread'] = df[self.high_column] - df[self.low_column]
-        df['hl_spread_pct'] = (df[self.high_column] - df[self.low_column]) / df[self.low_column]
+        df['hl_spread_1lag'] = df[self.high_column].shift(1) - df[self.low_column].shift(1)
+        df['hl_spread_pct_1lag'] = (df[self.high_column].shift(1) - df[self.low_column]).shift(1) / df[self.low_column].shift(1)
         
         # Price position within daily range
-        df['price_position'] = (df[self.price_column] - df[self.low_column]) / (df[self.high_column] - df[self.low_column])
+        df['price_position_1lag'] = (df[self.price_column].shift(1) - df[self.low_column].shift(1)) / (df[self.high_column].shift(1) - df[self.low_column].shift(1))
         
         # Gap features
-        df['gap'] = df[self.open_column] - df[self.price_column].shift(1)
-        df['gap_pct'] = df['gap'] / df[self.price_column].shift(1)
+        df['gap_1lag'] = df[self.open_column].shift(1) - df[self.price_column].shift(2)
+        df['gap_pct_1lag'] = df['gap'] / df[self.price_column].shift(2)
         
         # Price ratios
-        df['close_open_ratio'] = df[self.price_column] / df[self.open_column]
-        df['high_close_ratio'] = df[self.high_column] / df[self.price_column]
-        df['low_close_ratio'] = df[self.low_column] / df[self.price_column]
+        df['close_open_ratio_1lag'] = df[self.price_column].shift(1) / df[self.open_column].shift(1)
+        df['high_close_ratio_1lag'] = df[self.high_column].shift(1) / df[self.price_column].shift(1)
+        df['low_close_ratio_1lag'] = df[self.low_column].shift(1) / df[self.price_column].shift(1)
         
         return df
     
@@ -188,60 +199,54 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         df = data.copy()
         
         # Volume changes
-        df['volume_change'] = df[self.volume_column] - df[self.volume_column].shift(1)
-        df['volume_change_pct'] = df[self.volume_column].pct_change()
+        df['volume_change_1lag'] = df[self.volume_column].shift(1) - df[self.volume_column].shift(2)
+        # df['volume_change_pct'] = df[self.volume_column].pct_change()
         
-        # Volume moving averages
-        df['volume_sma_5'] = df[self.volume_column].rolling(window=5).mean()
-        df['volume_sma_20'] = df[self.volume_column].rolling(window=20).mean()
-        df['volume_ema_5'] = df[self.volume_column].ewm(span=5).mean()
-        df['volume_ema_20'] = df[self.volume_column].ewm(span=20).mean()
+        # Volume moving averages (prevent leakage)
+        df['volume_sma_5'] = df[self.volume_column].shift(1).rolling(window=5).mean()
+        df['volume_sma_20'] = df[self.volume_column].shift(1).rolling(window=20).mean()
+        df['volume_ema_5'] = df[self.volume_column].shift(1).ewm(span=5).mean()
+        df['volume_ema_20'] = df[self.volume_column].shift(1).ewm(span=20).mean()
         
         # Volume ratios
-        df['volume_ratio_5'] = df[self.volume_column] / df['volume_sma_5']
-        df['volume_ratio_20'] = df[self.volume_column] / df['volume_sma_20']
+        df['volume_ratio_5'] = df[self.volume_column].shift(1) / df['volume_sma_5']
+        df['volume_ratio_20'] = df[self.volume_column].shift(1) / df['volume_sma_20']
         
         # Volume volatility
-        df['volume_volatility'] = df[self.volume_column].rolling(window=20).std()
+        df['volume_volatility'] = df[self.volume_column].shift(1).rolling(window=20).std()
         
         # Price-volume features
-        df['price_volume'] = df[self.price_column] * df[self.volume_column]
-        df['vwap'] = df['price_volume'].rolling(window=20).sum() / df[self.volume_column].rolling(window=20).sum()
+        df['price_volume_1lag'] = df[self.price_column] .shift(1)* df[self.volume_column].shift(1)
+        df['vwap'] = df['price_volume_1lag'].rolling(window=20).sum() / df[self.volume_column].shift(1).rolling(window=20).sum()
         
         return df
     
     def _add_technical_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
         """Add technical indicators."""
         df = data.copy()
-        
         # RSI
-        df['rsi_14'] = self._calculate_rsi(df[self.price_column], period=14)
-        df['rsi_21'] = self._calculate_rsi(df[self.price_column], period=21)
-        
+        df['rsi_14'] = self._calculate_rsi(df[self.price_column], period=14).shift(1)
+        df['rsi_21'] = self._calculate_rsi(df[self.price_column], period=21).shift(1)
         # Moving averages
         for period in [5, 10, 20, 50, 100, 200]:
-            df[f'sma_{period}'] = self._calculate_sma(df[self.price_column], period)
-            df[f'ema_{period}'] = self._calculate_ema(df[self.price_column], period)
-        
+            df[f'sma_{period}'] = self._calculate_sma(df[self.price_column], period).shift(1)
+            df[f'ema_{period}'] = self._calculate_ema(df[self.price_column], period).shift(1)
         # MACD
         macd_line, signal_line, histogram = self._calculate_macd(df[self.price_column])
-        df['macd'] = macd_line
-        df['macd_signal'] = signal_line
-        df['macd_histogram'] = histogram
-        
+        df['macd'] = macd_line.shift(1)
+        df['macd_signal'] = signal_line.shift(1)
+        df['macd_histogram'] = histogram.shift(1)
         # Bollinger Bands
         bb_upper, bb_middle, bb_lower = self._calculate_bollinger_bands(df[self.price_column])
-        df['bb_upper'] = bb_upper
-        df['bb_middle'] = bb_middle
-        df['bb_lower'] = bb_lower
-        df['bb_width'] = (bb_upper - bb_lower) / bb_middle
-        df['bb_position'] = (df[self.price_column] - bb_lower) / (bb_upper - bb_lower)
-        
+        df['bb_upper'] = bb_upper.shift(1)
+        df['bb_middle'] = bb_middle.shift(1)
+        df['bb_lower'] = bb_lower.shift(1)
+        df['bb_width'] = ((bb_upper - bb_lower) / bb_middle).shift(1)
+        df['bb_position'] = ((df[self.price_column] - bb_lower) / (bb_upper - bb_lower)).shift(1)
         # Stochastic Oscillator
         stoch_k, stoch_d = self._calculate_stochastic(df[self.high_column], df[self.low_column], df[self.price_column])
-        df['stoch_k'] = stoch_k
-        df['stoch_d'] = stoch_d
-        
+        df['stoch_k'] = stoch_k.shift(1)
+        df['stoch_d'] = stoch_d.shift(1)
         return df
     
     def _add_momentum_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -250,16 +255,16 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         
         # Rate of Change
         for period in [5, 10, 20]:
-            df[f'roc_{period}'] = self._calculate_roc(df[self.price_column], period)
+            df[f'roc_{period}'] = self._calculate_roc(df[self.price_column], period).shift(1)
         
         # Williams %R
-        df['williams_r'] = self._calculate_williams_r(df[self.high_column], df[self.low_column], df[self.price_column])
+        df['williams_r'] = self._calculate_williams_r(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
         
         # Commodity Channel Index
-        df['cci'] = self._calculate_cci(df[self.high_column], df[self.low_column], df[self.price_column])
+        df['cci'] = self._calculate_cci(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
         
         # Money Flow Index
-        df['mfi'] = self._calculate_mfi(df[self.high_column], df[self.low_column], df[self.price_column], df[self.volume_column])
+        df['mfi'] = self._calculate_mfi(df[self.high_column], df[self.low_column], df[self.price_column], df[self.volume_column]).shift(1)
         
         return df
     
@@ -269,13 +274,13 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         
         # Historical Volatility
         for period in [10, 20, 30]:
-            df[f'volatility_{period}'] = self._calculate_volatility(df[self.price_column], period)
+            df[f'volatility_{period}'] = self._calculate_volatility(df[self.price_column], period).shift(1)
         
         # Average True Range
-        df['atr'] = self._calculate_atr(df[self.high_column], df[self.low_column], df[self.price_column])
+        df['atr'] = self._calculate_atr(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
         
         # True Range
-        df['true_range'] = self._calculate_true_range(df[self.high_column], df[self.low_column], df[self.price_column])
+        df['true_range'] = self._calculate_true_range(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
         
         return df
     
@@ -284,17 +289,17 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         df = data.copy()
         
         # ADX (Average Directional Index)
-        df['adx'] = self._calculate_adx(df[self.high_column], df[self.low_column], df[self.price_column])
+        df['adx'] = self._calculate_adx(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
         
         # Parabolic SAR
-        df['sar'] = self._calculate_sar(df[self.high_column], df[self.low_column], df[self.price_column])
+        df['sar'] = self._calculate_sar(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
         
         # Ichimoku Cloud
         ichimoku = self._calculate_ichimoku(df[self.high_column], df[self.low_column], df[self.price_column])
-        df['ichimoku_conversion'] = ichimoku['conversion']
-        df['ichimoku_base'] = ichimoku['base']
-        df['ichimoku_span_a'] = ichimoku['span_a']
-        df['ichimoku_span_b'] = ichimoku['span_b']
+        df['ichimoku_conversion'] = ichimoku['conversion'].shift(1)
+        df['ichimoku_base'] = ichimoku['base'].shift(1)
+        df['ichimoku_span_a'] = ichimoku['span_a'].shift(1)
+        df['ichimoku_span_b'] = ichimoku['span_b'].shift(1)
         
         return df
     
@@ -410,16 +415,23 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
     
     def _calculate_sar(self, high: pd.Series, low: pd.Series, close: pd.Series, 
                      acceleration: float = 0.02, maximum: float = 0.2) -> pd.Series:
-        """Calculate Parabolic SAR (simplified version)."""
-        sar = pd.Series(index=close.index, dtype=float)
-        sar.iloc[0] = low.iloc[0]
-        
-        for i in range(1, len(close)):
-            if close.iloc[i] > sar.iloc[i-1]:
+        """Calculate Parabolic SAR (robust version)."""
+        n = len(close)
+        sar = pd.Series(np.nan, index=close.index)
+        # Find first non-NaN low value for initialization
+        first_valid = low.first_valid_index()
+        if first_valid is not None:
+            sar.iloc[first_valid] = low.iloc[first_valid]
+        else:
+            return sar  # all NaN
+        # Use unshifted columns for SAR calculation
+        for i in range(first_valid + 1, n):
+            if pd.isna(sar.iloc[i-1]) or pd.isna(high.iloc[i]) or pd.isna(low.iloc[i]):
+                sar.iloc[i] = np.nan
+            elif close.iloc[i] > sar.iloc[i-1]:
                 sar.iloc[i] = sar.iloc[i-1] + acceleration * (high.iloc[i] - sar.iloc[i-1])
             else:
                 sar.iloc[i] = sar.iloc[i-1] - acceleration * (sar.iloc[i-1] - low.iloc[i])
-        
         return sar
     
     def _calculate_ichimoku(self, high: pd.Series, low: pd.Series, close: pd.Series,
@@ -443,3 +455,28 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             'span_a': span_a,
             'span_b': span_b
         }
+
+    def _remove_today_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Remove features that may cause data leakage."""
+        df = data.copy()
+
+        df.drop(columns=[
+            self.price_column,
+            self.volume_column,
+            self.high_column,   
+            self.low_column,
+            self.open_column,
+            'dividends',
+            'stock splits'
+
+        ], inplace=True, errors='ignore')
+
+        return df
+    
+    def add_target_col(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Add target column: next day's percentage change in price."""
+        df = data.copy()
+
+        df['target'] = df[self.price_column].pct_change().shift(-1)  # Next day's closing price
+
+        return df
