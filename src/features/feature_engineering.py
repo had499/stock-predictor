@@ -38,7 +38,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                  add_technical_indicators: bool = True,
                  add_momentum_indicators: bool = True,
                  add_volatility_indicators: bool = True,
-                 add_trend_indicators: bool = True):
+                 add_trend_indicators: bool = True,
+                 etf_columns: Optional[List[str]] = None,
+                 sector_map: Optional[Dict[str, str]] = None):
         """
         Initialize the FeatureEngineer.
         
@@ -54,6 +56,8 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             add_momentum_indicators (bool): Whether to add momentum indicators
             add_volatility_indicators (bool): Whether to add volatility indicators
             add_trend_indicators (bool): Whether to add trend indicators
+            etf_columns (List[str], optional): List of ETF price columns (e.g., ['SPY','XLK','XLF',...])
+            sector_map (Dict[str,str], optional): Mapping from ticker to sector ETF (e.g., {'AAPL':'XLK'})
         """
         self.price_column = price_column
         self.volume_column = volume_column
@@ -66,6 +70,8 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         self.add_momentum_indicators = add_momentum_indicators
         self.add_volatility_indicators = add_volatility_indicators
         self.add_trend_indicators = add_trend_indicators
+        self.etf_columns = etf_columns if etf_columns is not None else ['SPY']
+        self.sector_map = sector_map if sector_map is not None else {}
         
         warnings.filterwarnings('ignore', category=FutureWarning)
     
@@ -112,20 +118,25 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
     
     def _add_all_features(self, data: pd.DataFrame) -> pd.DataFrame:
         """Add all available features to the dataset."""
-        logger.info("Adding features to dataset...")
-        
-        logger.info("Applying features per symbol...")
+        # logger.info("Adding features to dataset...")
+        # logger.info("Applying features per symbol...")
         # Apply features per symbol using groupby
-        df = data.groupby('symbol').apply(self._add_features_to_group).reset_index(drop=True)
+        df = data.groupby('symbol').apply(self._add_features_to_group, etf_data=data).reset_index(drop=True)
+
+        # Add cross-sectional rank features (per date)
+        df = self._add_rank_features(df)
+
+        # Add calendar/time features
+        df = self._add_calendar_features(df)
 
         # Remove features that may cause data leakage
         df = self._remove_today_features(df)
-
-        
-        logger.info(f"Added {len(df.columns) - len(data.columns)} new features")
+        df = self._clean_etf(df)
+        # logger.info(f"Added {len(df.columns) - len(data.columns)} new features")
         return df
+
     
-    def _add_features_to_group(self, group_data: pd.DataFrame) -> pd.DataFrame:
+    def _add_features_to_group(self, group_data: pd.DataFrame, etf_data: pd.DataFrame = None) -> pd.DataFrame:
         """Add features to a single symbol's data."""
         # Make a copy to avoid modifying original data
         df = group_data.copy()
@@ -151,6 +162,9 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         
         if self.add_trend_indicators:
             df = self._add_trend_indicators(df)
+
+        # Add ETF features
+        df = self._add_etf_features(df, etf_data)
 
         # Add target column
         df = self.add_target_col(df)
@@ -185,13 +199,47 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         
         # Gap features
         df['gap_1lag'] = df[self.open_column].shift(1) - df[self.price_column].shift(2)
-        df['gap_pct_1lag'] = df['gap'] / df[self.price_column].shift(2)
+        df['gap_pct_1lag'] = df['gap_1lag'] / df[self.price_column].shift(2)
         
         # Price ratios
         df['close_open_ratio_1lag'] = df[self.price_column].shift(1) / df[self.open_column].shift(1)
         df['high_close_ratio_1lag'] = df[self.high_column].shift(1) / df[self.price_column].shift(1)
         df['low_close_ratio_1lag'] = df[self.low_column].shift(1) / df[self.price_column].shift(1)
         
+        return df
+    
+
+    def _add_rank_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add cross-sectional rank and percentile features for selected columns, per date.
+        Only applies to stocks (not ETFs).
+        """
+        df = data.copy()
+        # Select numeric columns to rank (excluding target and non-feature columns)
+        exclude_cols = {'target', 'symbol', 'date'}
+        feature_cols = [col for col in df.select_dtypes(include=[np.number]).columns if col not in exclude_cols]
+        # Only compute for rows that are not ETFs
+        mask = ~df['symbol'].isin(self.etf_columns)
+        for col in feature_cols:
+            # Rank and percentile per date
+            df.loc[mask, f'{col}_rank'] = df[mask].groupby('date')[col].rank(method='average')
+            df.loc[mask, f'{col}_pctile'] = df[mask].groupby('date')[col].rank(pct=True)
+        return df
+
+    def _add_calendar_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add calendar/time features: day of week, month, quarter, year, is_month_end, is_quarter_end, is_year_end.
+        """
+        df = data.copy()
+        if 'date' in df.columns:
+            date_col = pd.to_datetime(df['date'])
+            df['day_of_week'] = date_col.dt.dayofweek  # 0=Monday
+            df['month'] = date_col.dt.month
+            df['quarter'] = date_col.dt.quarter
+            df['year'] = date_col.dt.year
+            df['is_month_end'] = date_col.dt.is_month_end.astype(int)
+            df['is_quarter_end'] = date_col.dt.is_quarter_end.astype(int)
+            df['is_year_end'] = date_col.dt.is_year_end.astype(int)
         return df
     
     def _add_volume_features(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -269,19 +317,23 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         return df
     
     def _add_volatility_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Add volatility indicators."""
+        """Add volatility indicators, including HAR-style features."""
         df = data.copy()
-        
+        returns = df[self.price_column].pct_change()
+
         # Historical Volatility
         for period in [10, 20, 30]:
             df[f'volatility_{period}'] = self._calculate_volatility(df[self.price_column], period).shift(1)
-        
         # Average True Range
         df['atr'] = self._calculate_atr(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
-        
         # True Range
         df['true_range'] = self._calculate_true_range(df[self.high_column], df[self.low_column], df[self.price_column]).shift(1)
-        
+
+        # HAR-style realized volatility features (lagged)
+        df['rv_1d_lag'] = returns.rolling(window=1).std().shift(1)
+        df['rv_5d_lag'] = returns.rolling(window=5).std().shift(1)
+        df['rv_22d_lag'] = returns.rolling(window=22).std().shift(1)
+
         return df
     
     def _add_trend_indicators(self, data: pd.DataFrame) -> pd.DataFrame:
@@ -303,6 +355,98 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         
         return df
     
+    def _add_etf_features(self, data: pd.DataFrame, etf_data: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add ETF-related features:
+        - Lagged ETF returns for all ETFs in self.etf_columns
+        - Relative returns vs sector ETF(s)
+        - Explicit primary ETF relationship for each stock
+        - Rolling correlations (stock vs ETF returns)
+        """
+        df = data.copy()
+
+        # Ensure we have a date column
+        if 'date' not in df.columns:
+            if df.index.name == 'date':
+                df = df.reset_index()
+            else:
+                logger.warning("No 'date' column found in input data. ETF features will not be added.")
+                return df
+
+        # --- Expand ETF universe with sector_map entries ---
+        if self.sector_map:
+            extra_etfs = set()
+            for etfs in self.sector_map.values():
+                if isinstance(etfs, str):
+                    extra_etfs.add(etfs)
+                elif isinstance(etfs, list):
+                    extra_etfs.update(etfs)
+
+            # Merge with the existing etf_columns
+            self.etf_columns = sorted(set(self.etf_columns) | extra_etfs)
+
+        # --- Pivot ETF prices ---
+        etf_prices = (
+            etf_data[etf_data['symbol'].isin(self.etf_columns)]
+            .pivot(index='date', columns='symbol', values=self.price_column)
+        )
+
+        # Calculate lagged ETF returns
+        etf_returns = etf_prices.pct_change().shift(1).add_suffix("_return_1lag").reset_index()
+
+        # Merge into df
+        # df = df.merge(etf_prices.reset_index(), on="date", how="left")
+        df = df.merge(etf_returns, on="date", how="left")
+
+        # --- Stock returns (lagged, to match ETF returns) ---
+        df["stock_return_1lag"] = df[self.price_column].pct_change().shift(1)
+
+        # --- Sector ETF mapping ---
+        if self.sector_map and 'symbol' in df.columns:
+            symbol = df['symbol'].iloc[0]
+            sector_etfs = self.sector_map.get(symbol, [])
+
+            # Normalize to list
+            if isinstance(sector_etfs, str):
+                sector_etfs = [sector_etfs]
+
+            if sector_etfs:
+                for sector_etf in sector_etfs:
+                    df[f'ETF_map_{sector_etf}'] = 1
+                
+
+                for sector_etf in self.etf_columns:
+                    col_name = f"{sector_etf}_return_1lag"
+                    if col_name in df.columns:
+                        # Relative return
+                        df[f"relative_return_1lag_{sector_etf}"] = df["stock_return_1lag"] - df[col_name]
+
+                        # --- Rolling correlations ---
+                        for window in [20, 60, 120]:  # 1m, 3m, 6m approx
+                            df[f"corr_{sector_etf}_{window}d"] = (
+                                df["stock_return_1lag"]
+                                .rolling(window)
+                                .corr(df[col_name])
+                            )
+
+
+        logger.info(
+            f"ETF features added: {[col for col in df.columns if 'return_1lag' in col or 'relative_return_1lag' in col or 'corr_' in col]}"
+        )
+        return df
+
+    def _clean_etf(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Remove rows corresponding to ETFs."""
+        df = data.copy()
+                # Remove rows corresponding to ETFs
+        df = df[~df['symbol'].isin(self.etf_columns)]
+
+        etf_flags = [i for i in df.columns if 'ETF_map_' in i]
+
+        df[etf_flags] = df[etf_flags].fillna(0)
+
+        return df
+
     # Technical Indicator Calculation Methods
     
     def _calculate_rsi(self, prices: pd.Series, period: int = 14) -> pd.Series:
@@ -444,10 +588,10 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         base = (high.rolling(window=base_period).max() + 
                low.rolling(window=base_period).min()) / 2
         
-        span_a = ((conversion + base) / 2).shift(displacement)
+        span_a = (conversion + base) / 2
         
-        span_b = ((high.rolling(window=span_b_period).max() + 
-                  low.rolling(window=span_b_period).min()) / 2).shift(displacement)
+        span_b = (high.rolling(window=span_b_period).max() + 
+              low.rolling(window=span_b_period).min()) / 2
         
         return {
             'conversion': conversion,
@@ -467,16 +611,28 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             self.low_column,
             self.open_column,
             'dividends',
-            'stock splits'
+            'stock splits',
+            'price_change'
 
         ], inplace=True, errors='ignore')
 
         return df
     
     def add_target_col(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Add target column: next day's percentage change in price."""
+        """Add target column: realized volatility (std of returns) over the next 15 days."""
         df = data.copy()
 
-        df['target'] = df[self.price_column].pct_change().shift(-1)  # Next day's closing price
+        # Calculate daily returns
+        returns = df[self.price_column].pct_change()
+
+        # Compute rolling std over a 15-day forward window (t to t+14)
+        fwd_vol = (
+            returns.shift(-14)
+            .rolling(window=15, min_periods=15)
+            .std()
+        )
+
+        # This is your target
+        df['target'] = fwd_vol
 
         return df
