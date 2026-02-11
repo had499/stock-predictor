@@ -40,7 +40,8 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
                  add_volatility_indicators: bool = True,
                  add_trend_indicators: bool = True,
                  etf_columns: Optional[List[str]] = None,
-                 sector_map: Optional[Dict[str, str]] = None):
+                 sector_map: Optional[Dict[str, str]] = None,
+                 target_horizon: int = 1):
         """
         Initialize the FeatureEngineer.
         
@@ -58,6 +59,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             add_trend_indicators (bool): Whether to add trend indicators
             etf_columns (List[str], optional): List of ETF price columns (e.g., ['SPY','XLK','XLF',...])
             sector_map (Dict[str,str], optional): Mapping from ticker to sector ETF (e.g., {'AAPL':'XLK'})
+            target_horizon (int): Number of days forward to predict (1=next day, 5=next week, etc.)
         """
         self.price_column = price_column
         self.volume_column = volume_column
@@ -72,6 +74,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         self.add_trend_indicators = add_trend_indicators
         self.etf_columns = etf_columns if etf_columns is not None else ['SPY']
         self.sector_map = sector_map if sector_map is not None else {}
+        self.target_horizon = target_horizon
         
         warnings.filterwarnings('ignore', category=FutureWarning)
     
@@ -167,7 +170,7 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         df = self._add_etf_features(df, etf_data)
 
         # Add target column
-        df = self.add_target_col(df)
+        df = self.add_target_col(df, horizon=self.target_horizon)
         logger.info(f"Added {len(df.columns) - len(group_data.columns)} new features")
         return df
     
@@ -618,21 +621,23 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
 
         return df
     
-    def add_target_col(self, data: pd.DataFrame) -> pd.DataFrame:
-        """Add target column: realized volatility (std of returns) over the next 15 days."""
+    def add_target_col(self, data: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
+        """
+        Add target column: forward returns.
+        
+        Args:
+            horizon: Number of days forward to predict
+                - 1: next day return (noisy, more samples)
+                - 5: next week return (smoother, fewer independent samples)
+                - 10: next 2-week return
+        """
         df = data.copy()
 
-        # Calculate daily returns
-        returns = df[self.price_column].pct_change()
-
-        # Compute rolling std over a 15-day forward window (t to t+14)
-        fwd_vol = (
-            returns.shift(-14)
-            .rolling(window=15, min_periods=15)
-            .std()
-        )
-
-        # This is your target
-        df['target'] = fwd_vol
+        if horizon == 1:
+            # Next day's return
+            df['target'] = df[self.price_column].pct_change().shift(-1)
+        else:
+            # Multi-day forward return: (price_t+h - price_t) / price_t
+            df['target'] = (df[self.price_column].shift(-horizon) / df[self.price_column]) - 1
 
         return df
