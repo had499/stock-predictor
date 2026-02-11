@@ -208,6 +208,18 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
         df['close_open_ratio_1lag'] = df[self.price_column].shift(1) / df[self.open_column].shift(1)
         df['high_close_ratio_1lag'] = df[self.high_column].shift(1) / df[self.price_column].shift(1)
         df['low_close_ratio_1lag'] = df[self.low_column].shift(1) / df[self.price_column].shift(1)
+
+        # Lagged returns (momentum/reversal signals)
+        # These are the MOST IMPORTANT features for return prediction!
+        df['return_1lag'] = df[self.price_column].pct_change().shift(1)  # Yesterday's return
+        df['return_2lag'] = df[self.price_column].pct_change().shift(2)  # 2 days ago
+        df['return_3lag'] = df[self.price_column].pct_change().shift(3)  # 3 days ago
+        df['return_5lag'] = df[self.price_column].pct_change().shift(5)  # 1 week ago
+        df['return_10lag'] = df[self.price_column].pct_change().shift(10)  # 2 weeks ago
+        
+        # Multi-day lagged returns (for longer horizon prediction)
+        df['return_7d_1lag'] = (df[self.price_column].shift(1) / df[self.price_column].shift(8) - 1)  # Last week's 7-day return
+        df['return_7d_2lag'] = (df[self.price_column].shift(8) / df[self.price_column].shift(15) - 1)  # 2 weeks ago 7-day return
         
         return df
     
