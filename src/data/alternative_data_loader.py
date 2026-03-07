@@ -82,6 +82,15 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
       - Insider transactions from yfinance
       - Institutional holder data from yfinance
 
+    All data categories support temporal filtering via ``start_date`` and
+    ``end_date``.  When set, only records whose date falls within that range
+    are returned:
+
+    - **news**: filtered by ``publish_time``
+    - **macro**: filtered by the FRED observation date
+    - **insider_transactions**: filtered by the transaction date
+    - **institutional_holders**: filtered by the date reported
+
     Implements sklearn's BaseEstimator and TransformerMixin for easy integration
     with machine learning pipelines.
     """
@@ -102,8 +111,16 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
 
         Args:
             symbols (List[str], optional): Stock symbols for company-specific data.
-            start_date (str or datetime, optional): Start date for macro data.
-            end_date (str or datetime, optional): End date for macro data.
+            start_date (str or datetime, optional): Start of the date range (inclusive).
+                Applied to all data categories:
+                - news: articles published on or after this date
+                - macro: FRED observations on or after this date
+                - insider_transactions: transactions on or after this date
+                - institutional_holders: positions reported on or after this date
+                Defaults to 5 years ago for macro data when ``None``.
+            end_date (str or datetime, optional): End of the date range (inclusive).
+                Applied to all data categories (see ``start_date``).
+                Defaults to today for macro data when ``None``.
             include_news (bool): Fetch recent news headlines from yfinance.
             include_macro (bool): Fetch FRED macroeconomic indicators.
             include_insider_transactions (bool): Fetch insider transaction data.
@@ -195,13 +212,15 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
 
         The returned DataFrame contains news metadata that can be used as a
         basis for sentiment analysis or as a signal for model features.
+        Articles are filtered to [start_date, end_date] when those are set
+        on the loader.
 
         Args:
             symbol (str): Stock ticker symbol (e.g. 'AAPL').
 
         Returns:
             pd.DataFrame: News articles with columns:
-                uuid, title, publisher, link, provider_publish_time,
+                uuid, title, publisher, link, publish_time,
                 type, related_tickers, symbol.
         """
         try:
@@ -235,6 +254,10 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
                 })
 
             df = pd.DataFrame(records)
+
+            # Apply temporal filtering on publish_time
+            df = self._filter_by_date(df, 'publish_time')
+
             logger.info(f"Successfully fetched {len(df)} news articles for {symbol}")
             return df
 
@@ -302,7 +325,8 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
         Fetch insider transaction data for a stock symbol via yfinance.
 
         Insider buying and selling activity can serve as an alternative signal
-        for stock price direction.
+        for stock price direction.  Results are filtered to [start_date, end_date]
+        when those are set on the loader.
 
         Args:
             symbol (str): Stock ticker symbol.
@@ -322,6 +346,15 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
             df = transactions.copy()
             df.columns = [str(c).strip().lower().replace(' ', '_') for c in df.columns]
             df.insert(0, 'symbol', symbol)
+
+            # Detect the date column (yfinance uses 'start_date' or 'date')
+            date_col = next(
+                (c for c in df.columns if c in ('date', 'start_date', 'transaction_date')),
+                None,
+            )
+            if date_col:
+                df = self._filter_by_date(df, date_col)
+
             logger.info(f"Successfully fetched {len(df)} insider transactions for {symbol}")
             return df
 
@@ -334,7 +367,8 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
         Fetch institutional holder data for a stock symbol via yfinance.
 
         Large institutional ownership changes can signal shifts in market
-        sentiment and be used as alternative data features.
+        sentiment and be used as alternative data features.  Results are
+        filtered to [start_date, end_date] when those are set on the loader.
 
         Args:
             symbol (str): Stock ticker symbol.
@@ -354,6 +388,15 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
             df = holders.copy()
             df.columns = [str(c).strip().lower().replace(' ', '_') for c in df.columns]
             df.insert(0, 'symbol', symbol)
+
+            # Apply temporal filtering on the 'date_reported' column
+            date_col = next(
+                (c for c in df.columns if c in ('date_reported', 'date')),
+                None,
+            )
+            if date_col:
+                df = self._filter_by_date(df, date_col)
+
             logger.info(f"Successfully fetched {len(df)} institutional holders for {symbol}")
             return df
 
@@ -386,6 +429,55 @@ class AlternativeDataLoader(BaseEstimator, TransformerMixin):
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
+
+    def _filter_by_date(
+        self,
+        df: pd.DataFrame,
+        date_column: str,
+    ) -> pd.DataFrame:
+        """
+        Filter *df* so only rows where *date_column* falls within
+        [self.start_date, self.end_date] are kept.
+
+        If both ``start_date`` and ``end_date`` are ``None``, the DataFrame
+        is returned unchanged.  Timezone-aware timestamps in *date_column* are
+        normalised to UTC and then made timezone-naive before comparison so
+        that user-supplied dates (which may be naive strings like '2023-01-01')
+        are always comparable.
+
+        Args:
+            df (pd.DataFrame): DataFrame to filter.
+            date_column (str): Name of the column holding datetime values.
+
+        Returns:
+            pd.DataFrame: Filtered DataFrame (copy).
+        """
+        if self.start_date is None and self.end_date is None:
+            return df
+
+        if date_column not in df.columns or df.empty:
+            return df
+
+        dates = pd.to_datetime(df[date_column], errors='coerce')
+
+        # Normalise tz-aware datetimes to UTC then strip timezone so that
+        # naive user-supplied dates are always comparable.
+        if dates.dt.tz is not None:
+            dates = dates.dt.tz_convert('UTC').dt.tz_localize(None)
+
+        # Floor to day so that date-only bounds (e.g. '2024-01-14') include
+        # all records on that calendar day regardless of their intraday time.
+        dates = dates.dt.normalize()
+
+        mask = pd.Series(True, index=df.index)
+        if self.start_date is not None:
+            start = pd.Timestamp(self.start_date)
+            mask &= dates >= start
+        if self.end_date is not None:
+            end = pd.Timestamp(self.end_date)
+            mask &= dates <= end
+
+        return df[mask].reset_index(drop=True)
 
     def _load_news_for_all_symbols(self) -> Dict[str, pd.DataFrame]:
         results: Dict[str, pd.DataFrame] = {}

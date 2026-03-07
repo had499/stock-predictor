@@ -286,6 +286,141 @@ def test_selective_statements():
     return True
 
 
+def test_temporal_filtering_start_date():
+    """FinancialDataLoader should exclude periods before start_date."""
+    print("Testing temporal filtering – start_date...")
+
+    # Mock has periods: 2021-12-31, 2022-12-31, 2023-12-31
+    with patch('data.financial_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = FinancialDataLoader(start_date='2022-06-01')
+        df = loader.get_income_statement('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    assert not df.empty, "Should have some results"
+    periods = pd.to_datetime(df['period'])
+    assert (periods >= pd.Timestamp('2022-06-01')).all(), (
+        "All returned periods should be on or after 2022-06-01"
+    )
+    # 2021-12-31 must be excluded
+    assert not (periods == pd.Timestamp('2021-12-31')).any(), (
+        "2021-12-31 period should be excluded by start_date filter"
+    )
+    print("✓ Temporal filtering – start_date test passed")
+    return True
+
+
+def test_temporal_filtering_end_date():
+    """FinancialDataLoader should exclude periods after end_date."""
+    print("Testing temporal filtering – end_date...")
+
+    # Mock has periods: 2021-12-31, 2022-12-31, 2023-12-31
+    with patch('data.financial_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = FinancialDataLoader(end_date='2022-12-31')
+        df = loader.get_income_statement('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    assert not df.empty, "Should have some results"
+    periods = pd.to_datetime(df['period'])
+    assert (periods <= pd.Timestamp('2022-12-31')).all(), (
+        "All returned periods should be on or before 2022-12-31"
+    )
+    # 2023-12-31 must be excluded
+    assert not (periods == pd.Timestamp('2023-12-31')).any(), (
+        "2023-12-31 period should be excluded by end_date filter"
+    )
+    print("✓ Temporal filtering – end_date test passed")
+    return True
+
+
+def test_temporal_filtering_date_range():
+    """FinancialDataLoader should return only periods within [start_date, end_date]."""
+    print("Testing temporal filtering – date range...")
+
+    # Mock has periods: 2021-12-31, 2022-12-31, 2023-12-31
+    with patch('data.financial_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = FinancialDataLoader(
+            start_date='2022-01-01',
+            end_date='2022-12-31',
+        )
+        df = loader.get_income_statement('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 1, "Exactly one period should match 2022-01-01 to 2022-12-31"
+    assert pd.to_datetime(df['period'].iloc[0]) == pd.Timestamp('2022-12-31'), (
+        "Only the 2022-12-31 period should be returned"
+    )
+    print("✓ Temporal filtering – date range test passed")
+    return True
+
+
+def test_temporal_no_dates_returns_all():
+    """FinancialDataLoader without dates should return all available periods."""
+    print("Testing no-date filter returns all periods...")
+
+    # Mock has 3 annual periods for income/balance and 2 for cash flow
+    with patch('data.financial_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = FinancialDataLoader()  # no start/end date
+        df = loader.get_income_statement('AAPL')
+
+    assert len(df) == 3, "All 3 periods should be returned when no date filter is set"
+    print("✓ No-date filter returns all periods test passed")
+    return True
+
+
+def test_temporal_date_range_no_matches():
+    """FinancialDataLoader should return empty DataFrame when no period falls in range."""
+    print("Testing temporal filtering – no matching periods...")
+
+    # Mock periods: 2021-12-31, 2022-12-31, 2023-12-31
+    # Request a far-future range with no matches
+    with patch('data.financial_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = FinancialDataLoader(
+            start_date='2030-01-01',
+            end_date='2030-12-31',
+        )
+        df = loader.get_income_statement('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 0, "No periods should match a far-future date range"
+    print("✓ Temporal filtering – no matches test passed")
+    return True
+
+
+def test_temporal_params_in_get_params():
+    """start_date and end_date should appear in get_params()."""
+    print("Testing start_date / end_date in get_params...")
+
+    loader = FinancialDataLoader(start_date='2022-01-01', end_date='2023-12-31')
+    params = loader.get_params()
+
+    assert 'start_date' in params, "start_date should be in params"
+    assert 'end_date' in params, "end_date should be in params"
+    assert params['start_date'] == '2022-01-01'
+    assert params['end_date'] == '2023-12-31'
+    print("✓ start_date / end_date in get_params test passed")
+    return True
+
+
+def test_temporal_convenience_function():
+    """load_financial_statements should pass start_date/end_date through to the loader."""
+    print("Testing temporal filtering in load_financial_statements convenience function...")
+
+    # Mock has periods 2021-12-31, 2022-12-31, 2023-12-31
+    with patch('data.financial_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        result = load_financial_statements(
+            'AAPL',
+            frequency='annual',
+            start_date='2023-01-01',
+            end_date='2023-12-31',
+        )
+
+    income = result['income_statement']
+    assert isinstance(income, pd.DataFrame)
+    assert len(income) == 1, "Only 2023-12-31 should match"
+    print("✓ Temporal filtering in load_financial_statements test passed")
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -306,6 +441,14 @@ def main():
         test_convenience_function_load_financial_statements,
         test_convenience_function_load_key_metrics,
         test_selective_statements,
+        # Temporal filtering
+        test_temporal_filtering_start_date,
+        test_temporal_filtering_end_date,
+        test_temporal_filtering_date_range,
+        test_temporal_no_dates_returns_all,
+        test_temporal_date_range_no_matches,
+        test_temporal_params_in_get_params,
+        test_temporal_convenience_function,
     ]
 
     passed = 0

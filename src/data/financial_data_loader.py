@@ -6,12 +6,17 @@ This module provides functionality to load companies' financial statement data
 using the yfinance library. It is designed to complement the stock price data
 loader with fundamental analysis data useful for stock price estimation.
 
+All statement-fetching methods support temporal filtering via ``start_date``
+and ``end_date``, so only reporting periods that fall within the requested
+range are returned.
+
 Author: Stock Predictor Project
 """
 
 import pandas as pd
 import numpy as np
 import yfinance as yf
+from datetime import datetime
 from typing import Union, List, Optional, Dict, Any
 import logging
 import warnings
@@ -35,6 +40,8 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
     def __init__(
         self,
         symbols: Optional[List[str]] = None,
+        start_date: Optional[Union[str, datetime]] = None,
+        end_date: Optional[Union[str, datetime]] = None,
         frequency: str = 'annual',
         include_income_statement: bool = True,
         include_balance_sheet: bool = True,
@@ -46,6 +53,12 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
 
         Args:
             symbols (List[str], optional): Stock symbols to load (can be set later).
+            start_date (str or datetime, optional): Earliest reporting period to include
+                (inclusive).  Periods before this date are excluded.  If ``None``,
+                no lower bound is applied.
+            end_date (str or datetime, optional): Latest reporting period to include
+                (inclusive).  Periods after this date are excluded.  If ``None``,
+                no upper bound is applied.
             frequency (str): Data frequency – 'annual' or 'quarterly'.
             include_income_statement (bool): Whether to fetch income statement data.
             include_balance_sheet (bool): Whether to fetch balance sheet data.
@@ -53,6 +66,8 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
             include_key_metrics (bool): Whether to fetch key financial metrics/ratios.
         """
         self.symbols = symbols
+        self.start_date = start_date
+        self.end_date = end_date
         self.frequency = frequency
         self.include_income_statement = include_income_statement
         self.include_balance_sheet = include_balance_sheet
@@ -73,6 +88,8 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
         """Get parameters for the transformer."""
         return {
             'symbols': self.symbols,
+            'start_date': self.start_date,
+            'end_date': self.end_date,
             'frequency': self.frequency,
             'include_income_statement': self.include_income_statement,
             'include_balance_sheet': self.include_balance_sheet,
@@ -123,11 +140,14 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
         """
         Fetch the income statement for a single symbol.
 
+        Only reporting periods within [start_date, end_date] are returned.
+        If both are ``None``, all available periods are returned.
+
         Args:
             symbol (str): Stock symbol (e.g. 'AAPL').
 
         Returns:
-            pd.DataFrame: Income statement data with periods as columns.
+            pd.DataFrame: Income statement data with periods as rows.
         """
         return self._fetch_statement(symbol, 'income_statement')
 
@@ -135,11 +155,14 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
         """
         Fetch the balance sheet for a single symbol.
 
+        Only reporting periods within [start_date, end_date] are returned.
+        If both are ``None``, all available periods are returned.
+
         Args:
             symbol (str): Stock symbol.
 
         Returns:
-            pd.DataFrame: Balance sheet data with periods as columns.
+            pd.DataFrame: Balance sheet data with periods as rows.
         """
         return self._fetch_statement(symbol, 'balance_sheet')
 
@@ -147,11 +170,14 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
         """
         Fetch the cash flow statement for a single symbol.
 
+        Only reporting periods within [start_date, end_date] are returned.
+        If both are ``None``, all available periods are returned.
+
         Args:
             symbol (str): Stock symbol.
 
         Returns:
-            pd.DataFrame: Cash flow statement data with periods as columns.
+            pd.DataFrame: Cash flow statement data with periods as rows.
         """
         return self._fetch_statement(symbol, 'cash_flow')
 
@@ -284,8 +310,9 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
                 or 'cash_flow'.
 
         Returns:
-            pd.DataFrame: Statement data (line items as rows, periods as columns),
-                transposed so that each row is a reporting period.
+            pd.DataFrame: Statement data transposed so each row is a reporting
+                period.  Rows are filtered to [start_date, end_date] when those
+                are set on the loader.
         """
         try:
             ticker = yf.Ticker(symbol)
@@ -322,6 +349,9 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
                 for c in df.columns
             ]
 
+            # Apply temporal filtering on the 'period' column
+            df = self._filter_by_date(df, 'period')
+
             logger.info(
                 f"Successfully fetched {statement_type} ({self.frequency}) for {symbol} "
                 f"({len(df)} periods)"
@@ -332,6 +362,55 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
             logger.error(f"Error fetching {statement_type} for {symbol}: {str(e)}")
             return pd.DataFrame([{'symbol': symbol, 'error': str(e)}])
 
+    def _filter_by_date(
+        self,
+        df: pd.DataFrame,
+        date_column: str,
+    ) -> pd.DataFrame:
+        """
+        Filter *df* so only rows where *date_column* is within
+        [self.start_date, self.end_date] are kept.
+
+        If both ``start_date`` and ``end_date`` are ``None``, the DataFrame
+        is returned unchanged.  Timezone-aware timestamps in *date_column* are
+        normalised to UTC and then made timezone-naive before comparison so
+        that user-supplied dates (which may be naive strings like '2023-01-01')
+        are always comparable.
+
+        Args:
+            df (pd.DataFrame): DataFrame to filter.
+            date_column (str): Name of the column holding datetime values.
+
+        Returns:
+            pd.DataFrame: Filtered DataFrame (copy).
+        """
+        if self.start_date is None and self.end_date is None:
+            return df
+
+        if date_column not in df.columns or df.empty:
+            return df
+
+        dates = pd.to_datetime(df[date_column], errors='coerce')
+
+        # Normalise tz-aware datetimes to UTC then strip timezone so that
+        # naive user-supplied dates are always comparable.
+        if dates.dt.tz is not None:
+            dates = dates.dt.tz_convert('UTC').dt.tz_localize(None)
+
+        # Floor to day so that date-only bounds (e.g. '2024-01-14') include
+        # all records on that calendar day regardless of their intraday time.
+        dates = dates.dt.normalize()
+
+        mask = pd.Series(True, index=df.index)
+        if self.start_date is not None:
+            start = pd.Timestamp(self.start_date)
+            mask &= dates >= start
+        if self.end_date is not None:
+            end = pd.Timestamp(self.end_date)
+            mask &= dates <= end
+
+        return df[mask].reset_index(drop=True)
+
 
 # ---------------------------------------------------------------------------
 # Convenience functions
@@ -340,6 +419,8 @@ class FinancialDataLoader(BaseEstimator, TransformerMixin):
 def load_financial_statements(
     symbol: str,
     frequency: str = 'annual',
+    start_date: Optional[Union[str, datetime]] = None,
+    end_date: Optional[Union[str, datetime]] = None,
 ) -> Dict[str, pd.DataFrame]:
     """
     Convenience function to load all financial statements for a single symbol.
@@ -347,12 +428,18 @@ def load_financial_statements(
     Args:
         symbol (str): Stock ticker symbol (e.g. 'AAPL').
         frequency (str): 'annual' or 'quarterly'.
+        start_date (str or datetime, optional): Earliest reporting period to include.
+        end_date (str or datetime, optional): Latest reporting period to include.
 
     Returns:
         Dict[str, pd.DataFrame]: Dictionary with keys
         'income_statement', 'balance_sheet', 'cash_flow', 'key_metrics'.
     """
-    loader = FinancialDataLoader(frequency=frequency)
+    loader = FinancialDataLoader(
+        frequency=frequency,
+        start_date=start_date,
+        end_date=end_date,
+    )
     return loader.get_all_financial_data(symbol)
 
 

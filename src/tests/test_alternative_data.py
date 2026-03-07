@@ -278,16 +278,6 @@ def test_transform_interface():
     print("✓ Transform interface test passed")
     return True
 
-    assert isinstance(result, dict), "Should return a dict"
-    assert 'news' in result, "Should include news"
-    assert 'macro' in result, "Should include macro"
-    assert 'insider_transactions' in result, "Should include insider_transactions"
-    assert 'institutional_holders' in result, "Should include institutional_holders"
-    assert 'AAPL' in result['news'], "AAPL news should be present"
-    assert 'MSFT' in result['news'], "MSFT news should be present"
-    print("✓ Transform interface test passed")
-    return True
-
 
 def test_get_set_params():
     """get_params / set_params should work correctly."""
@@ -370,6 +360,109 @@ def test_fred_series_catalog():
 
 
 # ---------------------------------------------------------------------------
+# Temporal filtering tests
+# ---------------------------------------------------------------------------
+
+def test_news_temporal_filtering_start_date():
+    """AlternativeDataLoader should exclude news published before start_date."""
+    print("Testing news temporal filtering – start_date...")
+
+    # Mock has articles published on 2024-01-15 and 2024-01-14
+    with patch('data.alternative_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        # Only articles from 2024-01-15 onward
+        loader = AlternativeDataLoader(start_date='2024-01-15')
+        df = loader.get_news('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    assert not df.empty, "Should have articles on or after 2024-01-15"
+    # The 2024-01-14 article must be excluded
+    assert len(df) == 1, "Only one article falls on or after 2024-01-15"
+    assert 'Apple reports record earnings' in df['title'].values
+    print("✓ News temporal filtering – start_date test passed")
+    return True
+
+
+def test_news_temporal_filtering_end_date():
+    """AlternativeDataLoader should exclude news published after end_date."""
+    print("Testing news temporal filtering – end_date...")
+
+    # Mock has articles on 2024-01-15 and 2024-01-14
+    with patch('data.alternative_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        # Only articles up to 2024-01-14
+        loader = AlternativeDataLoader(end_date='2024-01-14')
+        df = loader.get_news('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    assert not df.empty, "Should have articles on or before 2024-01-14"
+    assert len(df) == 1, "Only one article falls on or before 2024-01-14"
+    assert 'Fed holds rates steady' in df['title'].values
+    print("✓ News temporal filtering – end_date test passed")
+    return True
+
+
+def test_news_temporal_no_filter_returns_all():
+    """AlternativeDataLoader without dates should return all news."""
+    print("Testing news – no date filter returns all...")
+
+    with patch('data.alternative_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = AlternativeDataLoader()  # no dates
+        df = loader.get_news('AAPL')
+
+    assert len(df) == 2, "Both news articles should be returned when no date filter"
+    print("✓ News – no date filter returns all test passed")
+    return True
+
+
+def test_insider_transactions_temporal_filtering():
+    """AlternativeDataLoader should filter insider transactions by date."""
+    print("Testing insider transactions temporal filtering...")
+
+    # Mock has transactions on 2024-01-10 and 2024-01-05
+    with patch('data.alternative_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = AlternativeDataLoader(start_date='2024-01-08')
+        df = loader.get_insider_transactions('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    # Only the 2024-01-10 transaction should remain
+    assert len(df) == 1, "Only one transaction falls on or after 2024-01-08"
+    print("✓ Insider transactions temporal filtering test passed")
+    return True
+
+
+def test_institutional_holders_temporal_filtering():
+    """AlternativeDataLoader should filter institutional holders by date_reported."""
+    print("Testing institutional holders temporal filtering...")
+
+    # Mock has two holders both with date_reported 2023-12-31
+    with patch('data.alternative_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        # End date before the reporting date – nothing should match
+        loader = AlternativeDataLoader(end_date='2023-06-30')
+        df = loader.get_institutional_holders('AAPL')
+
+    assert isinstance(df, pd.DataFrame)
+    assert len(df) == 0, "No holders should be reported before 2023-06-30"
+    print("✓ Institutional holders temporal filtering test passed")
+    return True
+
+
+def test_temporal_no_dates_returns_all_alternative():
+    """AlternativeDataLoader without dates returns all rows for every data type."""
+    print("Testing no-date filter returns all rows (alternative data)...")
+
+    with patch('data.alternative_data_loader.yf.Ticker', return_value=_make_ticker_mock()):
+        loader = AlternativeDataLoader()
+        news = loader.get_news('AAPL')
+        transactions = loader.get_insider_transactions('AAPL')
+        holders = loader.get_institutional_holders('AAPL')
+
+    assert len(news) == 2, "All 2 news articles should be returned"
+    assert len(transactions) == 2, "All 2 insider transactions should be returned"
+    assert len(holders) == 2, "All 2 institutional holders should be returned"
+    print("✓ No-date filter returns all rows (alternative data) test passed")
+    return True
+
+
+# ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
 
@@ -390,6 +483,13 @@ def main():
         test_convenience_function_load_news,
         test_convenience_function_load_insider_transactions,
         test_fred_series_catalog,
+        # Temporal filtering
+        test_news_temporal_filtering_start_date,
+        test_news_temporal_filtering_end_date,
+        test_news_temporal_no_filter_returns_all,
+        test_insider_transactions_temporal_filtering,
+        test_institutional_holders_temporal_filtering,
+        test_temporal_no_dates_returns_all_alternative,
     ]
 
     passed = 0
