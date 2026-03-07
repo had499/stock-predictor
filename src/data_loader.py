@@ -17,7 +17,7 @@ import logging
 import warnings
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 class StockDataLoader:
