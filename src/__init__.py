@@ -6,6 +6,8 @@ A comprehensive package for stock data loading, preprocessing, and feature engin
 
 # Data loading
 from .data.data_loader import StockDataLoader
+from .data.financial_data_loader import FinancialDataLoader, load_financial_statements, load_key_metrics
+from .data.alternative_data_loader import AlternativeDataLoader, load_macro_indicators, load_news, load_insider_transactions
 
 # Feature engineering
 from .features.feature_engineering import FeatureEngineer, add_features, add_technical_indicators
@@ -24,6 +26,13 @@ __version__ = "1.0.0"
 __all__ = [
     # Data loading
     'StockDataLoader',
+    'FinancialDataLoader',
+    'load_financial_statements',
+    'load_key_metrics',
+    'AlternativeDataLoader',
+    'load_macro_indicators',
+    'load_news',
+    'load_insider_transactions',
     
     # Feature engineering
     'FeatureEngineer',
