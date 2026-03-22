@@ -122,7 +122,10 @@ class FeatureEngineer(BaseEstimator, TransformerMixin):
             'add_technical_indicators': self.add_technical_indicators,
             'add_momentum_indicators': self.add_momentum_indicators,
             'add_volatility_indicators': self.add_volatility_indicators,
-            'add_trend_indicators': self.add_trend_indicators
+            'add_trend_indicators': self.add_trend_indicators,
+            'etf_columns': self.etf_columns,
+            'sector_map': self.sector_map,
+            'target_horizon': self.target_horizon,
         }
     
     def transform(self, X):

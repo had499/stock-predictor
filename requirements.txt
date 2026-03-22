@@ -18,3 +18,14 @@ eli5
 joblib
 jupyterlab
 
+# News scraping & NLP
+requests
+beautifulsoup4
+feedparser
+nltk
+transformers
+torch
+sentence-transformers
+pyarrow
+edgartools
+

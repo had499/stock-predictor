@@ -106,34 +106,43 @@ class StockDataLoader(BaseEstimator, TransformerMixin):
     
     def _load_and_combine_stocks(self) -> pd.DataFrame:
         """Load data for multiple stocks and combine into a single DataFrame."""
-        all_data = []
+        # all_data = []
         
-        for symbol in self.symbols:
-            try:
-                logger.info(f"Loading data for {symbol}...")
-                data = self._load_single_stock(symbol)
+        # for symbol in self.symbols:
+        #     try:
+        #         logger.info(f"Loading data for {symbol}...")
+        #         data = self._load_single_stock(symbol)
                 
-                # Add symbol column if not already present
-                if 'symbol' not in data.columns:
-                    data['symbol'] = symbol
+        #         # Add symbol column if not already present
+        #         if 'symbol' not in data.columns:
+        #             data['symbol'] = symbol
                 
-                all_data.append(data)
-                logger.info(f"Successfully loaded {len(data)} records for {symbol}")
+        #         all_data.append(data)
+        #         logger.info(f"Successfully loaded {len(data)} records for {symbol}")
                 
-            except Exception as e:
-                logger.warning(f"Failed to load data for {symbol}: {str(e)}")
-                continue
+        #     except Exception as e:
+        #         logger.warning(f"Failed to load data for {symbol}: {str(e)}")
+        #         continue
         
-        if not all_data:
-            raise ValueError("No data could be loaded for any of the provided symbols")
+        # if not all_data:
+        #     raise ValueError("No data could be loaded for any of the provided symbols")
         
-        # Combine all data
-        combined_data = pd.concat(all_data, ignore_index=True)
+        # # Combine all data
+        # combined_data = pd.concat(all_data, ignore_index=True)
+        combined_data = yf.download(
+            tickers=self.symbols,
+            start=self.start_date,
+            end=self.end_date,
+            auto_adjust=self.auto_adjust).stack()
         
         # Sort by symbol and date
-        combined_data = combined_data.sort_values(['symbol', 'date']).reset_index(drop=True)
+        combined_data = combined_data.sort_values(['Ticker', 'Date']).reset_index()
+        combined_data.columns.name = None
+        combined_data = combined_data.rename(columns={'Date': 'date', 'Ticker': 'symbol', 'Adj Close': 'adj close',
+                                       'Close': 'close', 'High': 'high', 'Low': 'low', 'Open': 'open', 'Volume': 'volume'})
+
         
-        logger.info(f"Successfully combined data for {len(all_data)} symbols: {len(combined_data)} total records")
+        logger.info(f"Successfully combined data for {len(self.symbols)} symbols: {len(combined_data)} total records")
         return combined_data
     
     def _load_single_stock(self, symbol: str) -> pd.DataFrame:
