@@ -22,10 +22,12 @@ from .scraper import scrape_news, batch_scrape_news
 from .sentiment import (
     VaderSentimentAnalyzer,
     FinBERTSentimentAnalyzer,
+    aggregate_daily_sentiment,
+)
+from .vectorizer import (
     NewsTfidfVectorizer,
     NewsEmbeddingVectorizer,
     FinBERTEmbeddingVectorizer,
-    aggregate_daily_sentiment,
 )
 
 # Set up logging

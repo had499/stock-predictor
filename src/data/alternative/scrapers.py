@@ -184,9 +184,11 @@ def scrape_insider_trades(
         Cap on filings to parse (avoids very long fetches for active tickers).
     """
     try:
-        from edgar import get_filings as _edgar_get_filings
+        from edgar import Company as _EdgarCompany, set_identity as _edgar_set_identity
     except ImportError as exc:
         raise ImportError("edgartools is required: pip install edgartools") from exc
+
+    _edgar_set_identity("stock-predictor research@example.com")
 
     start = start_date or "2021-01-01"
     end = end_date or datetime.today().strftime("%Y-%m-%d")
@@ -199,7 +201,7 @@ def scrape_insider_trades(
     all_transactions: List[Dict] = []
 
     try:
-        filings = _edgar_get_filings(form="4", ticker=ticker, start_date=start, end_date=end)
+        filings = _EdgarCompany(ticker).get_filings(form="4", filing_date=f"{start}:{end}")
     except Exception as e:
         logger.warning("edgartools Form 4 fetch failed for %s: %s", ticker, e)
         return _empty_insider_df(ticker)

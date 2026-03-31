@@ -11,11 +11,12 @@ Quick start
 
 Components
 ----------
-- **scraper**   – ``scrape_news()``, ``scrape_google_news_rss()``, etc.
-- **sentiment** – ``VaderSentimentAnalyzer``, ``FinBERTSentimentAnalyzer``,
-                  ``NewsTfidfVectorizer``, ``NewsEmbeddingVectorizer``,
-                  ``aggregate_daily_sentiment()``
-- **pipeline**  – ``NewsDataPipeline`` (sklearn transformer), ``get_news()``
+- **scraper**    – ``scrape_news()``, ``scrape_google_news_rss()``, etc.
+- **sentiment**  – ``VaderSentimentAnalyzer``, ``FinBERTSentimentAnalyzer``,
+                   ``aggregate_daily_sentiment()``
+- **vectorizer** – ``NewsTfidfVectorizer``, ``NewsEmbeddingVectorizer``,
+                   ``FinBERTEmbeddingVectorizer``
+- **pipeline**   – ``NewsDataPipeline`` (sklearn transformer), ``get_news()``
 """
 
 from .scraper import (
@@ -29,10 +30,12 @@ from .scraper import (
 from .sentiment import (
     VaderSentimentAnalyzer,
     FinBERTSentimentAnalyzer,
+    aggregate_daily_sentiment,
+)
+from .vectorizer import (
     NewsTfidfVectorizer,
     NewsEmbeddingVectorizer,
     FinBERTEmbeddingVectorizer,
-    aggregate_daily_sentiment,
 )
 from .pipeline import (
     NewsDataPipeline,
@@ -48,13 +51,14 @@ __all__ = [
     "scrape_bing_news",
     "scrape_finviz_news",
     "scrape_yahoo_news_rss",
-    # Sentiment & vectorisation
+    # Sentiment
     "VaderSentimentAnalyzer",
     "FinBERTSentimentAnalyzer",
+    "aggregate_daily_sentiment",
+    # Vectorizers
     "NewsTfidfVectorizer",
     "NewsEmbeddingVectorizer",
     "FinBERTEmbeddingVectorizer",
-    "aggregate_daily_sentiment",
     # Pipeline
     "NewsDataPipeline",
     "get_news",
