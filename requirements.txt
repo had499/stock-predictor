@@ -17,6 +17,7 @@ shap
 eli5
 joblib
 jupyterlab
+pandas-datareader
 
 # News scraping & NLP
 requests
